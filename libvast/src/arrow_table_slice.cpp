@@ -28,6 +28,7 @@
 #include <arrow/io/api.h>
 #include <arrow/ipc/reader.h>
 #include <arrow/ipc/writer.h>
+#include <arrow/util/config.h>
 
 namespace vast {
 
@@ -132,8 +133,13 @@ arrow_table_slice::serialize_impl(caf::binary_serializer& sink) const {
   if (rows() == 0)
     return caf::none;
   VAST_ASSERT(batch_ != nullptr);
+#if ARROW_VERSION_MAJOR >= 2
+  auto writer_result
+    = arrow::ipc::MakeStreamWriter(&output_stream, batch_->schema());
+#else
   auto writer_result
     = arrow::ipc::NewStreamWriter(&output_stream, batch_->schema());
+#endif
   if (!writer_result.ok())
     return ec::unspecified;
   auto writer = std::move(*writer_result);
