@@ -29,7 +29,9 @@
 #include <flatbuffers/flatbuffers.h>
 
 #include <cstddef>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 using std::cerr;
@@ -46,13 +48,25 @@ enum class Kind {
   Segment,
 };
 
-typedef void (*printer)(vast::path, int);
+enum class output_verbosity {
+  normal,
+  verbose,
+};
 
-void print_unknown(vast::path, int);
-void print_vast_db(vast::path, int);
-void print_partition(vast::path, int);
-void print_index(vast::path, int);
-void print_segment(vast::path, int);
+struct formatting_options {
+  // TODO: Add `format` enum to be able to select json output.
+  output_verbosity verbosity;
+  bool human_readable_numbers; // print e.g. "2TiB" instead of '2199023255552"'
+  bool print_bytesizes;
+};
+
+typedef void (*printer)(vast::path, const formatting_options&, int);
+
+void print_unknown(vast::path, const formatting_options&, int);
+void print_vast_db(vast::path, const formatting_options&, int);
+void print_partition(vast::path, const formatting_options&, int);
+void print_index(vast::path, const formatting_options&, int);
+void print_segment(vast::path, const formatting_options&, int);
 
 static const std::map<Kind, printer> printers = {
   {Kind::Unknown, print_unknown}, {Kind::DatabaseDir, print_vast_db},
@@ -122,39 +136,59 @@ std::ostream& operator<<(std::ostream& out, const vast::fbs::uuid::v0* uuid) {
   return out;
 }
 
-void print_unknown(vast::path path, int indent) {
+void print_unknown(vast::path path, const formatting_options&, int indent) {
   std::string spaces(indent, ' ');
   std::cout << spaces << "(unknown " << path.str() << ")\n";
 }
 
-void print_vast_db(vast::path vast_db, int indent) {
+std::string print_bytesize(size_t bytes, const formatting_options& formatting) {
+  const char* suffixes[] = {
+    "", "KiB", "MiB", "GiB", "TiB", "EiB",
+  };
+  std::stringstream ss;
+  if (!formatting.human_readable_numbers) {
+    ss << bytes;
+  } else {
+    size_t idx = 0;
+    while (bytes > 1024 && idx < std::size(suffixes)) {
+      ++idx;
+      bytes /= 1024;
+    }
+    ss << bytes << std::setprecision(1) << suffixes[idx];
+  }
+  return std::move(ss).str();
+}
+
+void print_vast_db(vast::path vast_db, const formatting_options& formatting,
+                   int indent) {
   // TODO: We should have some versioning for the layout
   // of the vast.db directory itself, so we can still read
   // older versions.
   auto index_dir = vast_db / "index";
   std::string spaces(indent, ' ');
   std::cout << spaces << index_dir.str() << "/\n";
-  print_index(index_dir / "index.bin", indent + 2);
+  print_index(index_dir / "index.bin", formatting, indent + 2);
   for (auto file : vast::directory{index_dir}) {
     auto stem = file.basename(true).str();
     if (stem == "index")
       continue;
-    print_partition(file, indent + 2);
+    print_partition(file, formatting, indent + 2);
   }
   auto segments_dir = vast_db / "archive" / "segments";
   std::cout << spaces << segments_dir.str() << "/\n";
   for (auto file : vast::directory{segments_dir}) {
-    print_segment(file, indent + 2);
+    print_segment(file, formatting, indent + 2);
   }
 }
 
-void print_partition_v0(const vast::fbs::partition::v0* partition, int indent) {
+void print_partition_v0(const vast::fbs::partition::v0* partition,
+                        const formatting_options& formatting, int indent) {
   if (!partition) {
     std::cout << "(null)\n";
     return;
   }
   std::string spaces(indent, ' ');
-  std::cout << spaces << "Partition\n";
+  std::cout << spaces << "Paasdfrtition\n";
   vast::uuid id;
   if (partition->uuid())
     unpack(*partition->uuid(), id);
@@ -175,26 +209,55 @@ void print_partition_v0(const vast::fbs::partition::v0* partition, int indent) {
       std::cout << "(error: " << caf::to_string(error) << ")";
     else
       std::cout << rank(restored_ids);
+    if (formatting.print_bytesizes)
+      std::cout << "(" << print_bytesize(ids_bytes->size(), formatting) << ")";
     std::cout << "\n";
   }
-  // TODO: print combined_layout, indexes, and partition synopsis
+  std::cout << spaces.substr(2) << "Meta Index\n";
+  if (auto partition_synopsis = partition->partition_synopsis()) {
+    auto s = partition->partition_synopsis();
+    for (auto column_synopsis : *s->synopses()) {
+      if (auto opaque = column_synopsis->opaque_synopsis()) {
+        std::cout << spaces << "opaque";
+        if (formatting.print_bytesizes)
+          std::cout << " ("
+                    << print_bytesize(opaque->data()->size(), formatting)
+                    << ")";
+        std::cout << '\n';
+      } else if (auto bs = column_synopsis->bool_synopsis()) {
+        // ...
+      }
+    }
+  }
+  std::cout << spaces.substr(2) << "Column Indices\n";
+  for (auto index : *partition->indexes()) {
+    auto name = index->qualified_field_name();
+    auto sz = index->index()->data()->size();
+    std::cout << spaces << name->c_str();
+    if (formatting.print_bytesizes)
+      std::cout << " (" << print_bytesize(sz, formatting) << ")";
+    std::cout << "\n";
+  }
+  // TODO: print combined_layout and indexes
 }
 
-void print_partition(vast::path path, int indent) {
+void print_partition(vast::path path, const formatting_options& formatting,
+                     int indent) {
   auto partition = read_flatbuffer_file<vast::fbs::Partition>(path);
   if (!partition) {
     std::cout << "(error reading partition file " << path.str() << ")\n";
   }
   switch (partition->partition_type()) {
     case vast::fbs::partition::Partition::v0:
-      print_partition_v0(partition->partition_as_v0(), indent);
+      print_partition_v0(partition->partition_as_v0(), formatting, indent);
       break;
     default:
       std::cout << "(unknown partition version)\n";
   }
 }
 
-void print_index_v0(const vast::fbs::index::v0* index, int indent) {
+void print_index_v0(const vast::fbs::index::v0* index,
+                    const formatting_options& formatting, int indent) {
   if (!index) {
     std::cout << "(null)\n";
     return;
@@ -223,21 +286,23 @@ void print_index_v0(const vast::fbs::index::v0* index, int indent) {
   }
 }
 
-void print_index(vast::path path, int indent) {
+void print_index(vast::path path, const formatting_options& formatting,
+                 int indent) {
   auto index = read_flatbuffer_file<vast::fbs::Index>(path);
   if (!index) {
     std::cout << "(error reading index file " << path.str() << ")\n";
   }
   switch (index->index_type()) {
     case vast::fbs::index::Index::v0:
-      print_index_v0(index->index_as_v0(), indent);
+      print_index_v0(index->index_as_v0(), formatting, indent);
       break;
     default:
       std::cout << "(unknown partition version)\n";
   }
 }
 
-void print_segment_v0(const vast::fbs::segment::v0* segment, int indent = 0) {
+void print_segment_v0(const vast::fbs::segment::v0* segment,
+                      const formatting_options& formatting, int indent = 0) {
   vast::uuid id;
   if (segment->uuid())
     unpack(*segment->uuid(), id);
@@ -248,14 +313,15 @@ void print_segment_v0(const vast::fbs::segment::v0* segment, int indent = 0) {
   std::cout << spaces << "events: " << segment->events() << "\n";
 }
 
-void print_segment(vast::path path, int indent = 0) {
+void print_segment(vast::path path, const formatting_options& formatting,
+                   int indent = 0) {
   auto segment = read_flatbuffer_file<vast::fbs::Segment>(path);
   if (!segment) {
     std::cout << "(error reading segment file " << path.str() << ")\n";
   }
   switch (segment->segment_type()) {
     case vast::fbs::segment::Segment::v0:
-      print_segment_v0(segment->segment_as_v0(), indent);
+      print_segment_v0(segment->segment_as_v0(), formatting, indent);
       break;
     default:
       std::cout << "(unknown partition version)\n";
@@ -277,7 +343,10 @@ int main(int argc, char** argv) {
     std::cerr << "Could not determine type of " << argv[1] << std::endl;
     return 1;
   }
+  struct formatting_options format {};
+  format.human_readable_numbers = true;
+  format.print_bytesizes = true;
   auto printer = printers.at(kind);
-  printer(path, 0);
+  printer(path, format, 0);
   return 0;
 }
