@@ -351,10 +351,16 @@ caf::error segment_store::register_segment(const path& filename) {
   auto chk = chunk::mmap(filename);
   if (!chk)
     return make_error(ec::filesystem_error, "failed to mmap chunk", filename);
-  auto s = fbs::as_flatbuffer<fbs::Segment>(as_bytes(chk));
+  auto s = fbs::as_unverified_flatbuffer<fbs::Segment>(as_bytes(chk));
   if (s == nullptr)
     return make_error(ec::format_error, "segment integrity check failed");
+  // We might want to hand-roll the verification of the relevant fields here:
+  //
+  //   VerifyField<uint8_t>(verifier, VT_SEGMENT_TYPE)
+  //   ...
   auto s0 = s->segment_as_v0();
+  if (!s0)
+    return make_error(ec::format_error, "unknown segment version");
   num_events_ += s0->events();
   uuid segment_uuid;
   if (auto error = unpack(*s0->uuid(), segment_uuid))

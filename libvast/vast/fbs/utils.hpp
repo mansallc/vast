@@ -102,6 +102,12 @@ caf::error deserialize_bytes(const flatbuffers::Vector<Byte>* v, T& x) {
   return caf::none;
 }
 
+template <class Flatbuffer, size_t Extent = dynamic_extent>
+const Flatbuffer* as_unverified_flatbuffer(span<const byte, Extent> xs) {
+  auto data = reinterpret_cast<const uint8_t*>(xs.data());
+  return flatbuffers::GetRoot<Flatbuffer>(data);
+}
+
 /// Generic unpacking utility. The structural integrity of the flatbuffer is
 /// verified (i.e., no out-of-bounds offsets), but no type checking is done
 /// at all.
